@@ -1,8 +1,0 @@
-repo: scottefein/accountant-sync
-branch: develop
-
-sync:
-  agents:
-    enabled: true
-    include: all
-    exclude: []

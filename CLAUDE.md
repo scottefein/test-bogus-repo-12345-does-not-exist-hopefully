@@ -1,41 +1,63 @@
-# sef-industries-team
+# Project
 
-Centralized source of truth for Claude Code configurations (agents, skills, MCP, etc.) shared across all repos.
+> **Note:** This is a starter CLAUDE.md. As you work in this repo, update this file to reflect the actual architecture, commands, conventions, and decisions specific to this project. A well-maintained CLAUDE.md is the single best way to ensure consistent, high-quality AI assistance across sessions.
 
-## Repo Structure
+## Stack
 
-- `src/agents/*.md` — Canonical agent content (role-specific, no memory boilerplate)
-- `src/templates/agent-memory.md` — Shared memory boilerplate template (`{{AGENT_NAME}}` placeholder)
-- `repos/*.yml` — Per-repo sync configs (one YAML per onboarded repo)
-- `bin/build` — Compile `src/` -> `.claude/agents/` for this repo
-- `bin/sync` — Push compiled configs to target repos via PRs
-- `bin/onboard` — Register a repo for config sync
-- `.claude/agents/*.md` — Compiled output (built from `src/` + template)
-- `.claude/agent-memory/<agent>/` — Runtime memory dirs (contents gitignored)
+- **Frontend:** Next.js (App Router), TypeScript, Tailwind CSS
+- **Database:** Supabase (Postgres + Auth + Storage)
+- **Auth:** Clerk
+- **Email:** Resend
+- **Hosting:** Vercel
+- **AI:** Claude API (Anthropic)
 
-## Workflow
-
-1. Edit agent content in `src/agents/<name>.md`
-2. Run `bin/build` to compile locally
-3. Commit changes
-4. Run `bin/sync <owner/repo>` or `bin/sync --all` to push to target repos
-
-## Adding a New Agent
-
-1. Create `src/agents/<name>.md` with frontmatter and role content
-2. Run `bin/build` — this compiles the agent and creates the memory directory
-3. Commit and sync
-
-## Onboarding a Repo
+## Commands
 
 ```bash
-bin/onboard owner/repo-name       # Creates config, validates repo exists
-bin/onboard owner/repo-name --sync # Creates config and runs initial sync
+npm run dev          # Start dev server
+npm run build        # Production build
+npm run lint         # ESLint
+npm run test         # Run tests (if configured)
 ```
 
-## Key Rules
+## Project Structure
 
-- Never edit `.claude/agents/*.md` directly — they are compiled output from `bin/build`
-- Agent source files must NOT include the memory boilerplate — it's appended from the template
-- The `{{AGENT_NAME}}` placeholder in the template gets replaced with the filename (without .md)
-- Template-created repos auto-clean tooling via `.github/workflows/template-cleanup.yml`
+```
+src/
+  app/               # Next.js App Router pages and layouts
+  components/        # React components
+  lib/               # Shared utilities, API clients, helpers
+  types/             # TypeScript type definitions
+public/              # Static assets
+supabase/
+  migrations/        # Database migrations
+```
+
+## Environment Variables
+
+Secrets are managed via GitHub repo secrets (set during repo setup) and Vercel environment variables. For local development, copy `.env.example` to `.env.local`.
+
+Key variables:
+- `NEXT_PUBLIC_SUPABASE_URL` — Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase anonymous key
+- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service role key (server-side only)
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — Clerk publishable key
+- `CLERK_SECRET_KEY` — Clerk secret key
+- `RESEND_API_KEY` — Resend email API key
+
+## Conventions
+
+- Use server components by default; add `'use client'` only when needed
+- Colocate components with the routes that use them when they're single-use
+- Use Supabase client from `@supabase/ssr` for server components, `@supabase/auth-helpers-nextjs` for client
+- Prefer server actions for mutations over API routes
+- Use Zod for runtime validation at system boundaries
+
+## Updating This File
+
+This CLAUDE.md should evolve with the project. Update it when:
+- You add a new major dependency or service integration
+- You establish a pattern or convention that future work should follow
+- You discover a gotcha or non-obvious behavior worth documenting
+- The project structure changes significantly
+- You make an architectural decision that has lasting implications
