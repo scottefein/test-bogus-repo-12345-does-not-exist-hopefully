@@ -1,0 +1,75 @@
+name: Template Cleanup
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for template marker
+        id: check
+        run: |
+          # Only run cleanup if:
+          # 1. The marker file exists
+          # 2. This is NOT the source template repo itself
+          if [[ -f .template-marker && "${{ github.repository }}" != "scottefein/sef-industries-team" ]]; then
+            echo "is_template=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_template=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove tooling files
+        if: steps.check.outputs.is_template == 'true'
+        run: |
+          # Remove sync tooling (not needed in target repos)
+          rm -rf bin/
+          rm -rf repos/
+          rm -rf src/
+          rm -f .template-marker
+
+          # Replace template CLAUDE.md with project default
+          rm -f CLAUDE.md
+          if [[ -f CLAUDE.default.md ]]; then
+            mv CLAUDE.default.md CLAUDE.md
+          fi
+
+          # Remove this workflow (one-time use)
+          # Keep .github/setup/ and repo-setup.yml for post-creation setup
+          rm -f .github/workflows/template-cleanup.yml
+
+      - name: Commit cleanup
+        if: steps.check.outputs.is_template == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: clean up template tooling files
+
+          This repo was created from sef-industries-team template.
+          Removed sync tooling, kept .claude/ agent configs.
+
+          To register this repo for future config syncs, run in the
+          sef-industries-team repo:
+            bin/onboard ${{ github.repository }}"
+          git push
+
+      - name: Trigger auto-onboard
+        if: steps.check.outputs.is_template == 'true'
+        continue-on-error: true
+        run: |
+          curl -sf -X POST "https://sef-manager-4hh4odgora-ue.a.run.app/webhook/repo-created" \
+            -H "Content-Type: application/json" \
+            -d '{"repository": "${{ github.repository }}"}'
+          echo "::notice::Auto-onboard triggered"
+
+      - name: Post-cleanup notice
+        if: steps.check.outputs.is_template == 'true'
+        run: |
+          echo "::notice::Template cleanup complete. Auto-onboard has been triggered."

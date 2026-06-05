@@ -1,0 +1,74 @@
+name: Run Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Target repo (owner/repo)'
+        required: true
+      setup_config:
+        description: 'Setup config JSON (plugins to run)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    if: github.repository == 'scottefein/sef-industries-team'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          TARGET_REPO: ${{ github.event.inputs.repo }}
+          SETUP_CONFIG: ${{ github.event.inputs.setup_config }}
+        run: |
+          if [[ -z "$TARGET_REPO" ]]; then
+            echo "::error::Target repo is required"
+            exit 1
+          fi
+          echo "Target: $TARGET_REPO"
+          echo "$SETUP_CONFIG" | jq . > /dev/null || {
+            echo "::error::setup_config is not valid JSON"
+            exit 1
+          }
+
+      - name: Extract PAT from secrets
+        id: pat
+        env:
+          ORG_SECRETS: ${{ secrets.ORG_SETUP_SECRETS }}
+        run: |
+          PAT="$(echo "$ORG_SECRETS" | jq -r '.GITHUB_PAT // empty')"
+          if [[ -n "$PAT" ]]; then
+            echo "::add-mask::$PAT"
+            echo "token=$PAT" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No GITHUB_PAT found in ORG_SETUP_SECRETS"
+            exit 1
+          fi
+
+      - name: Push SETUP_CONFIG to target repo
+        env:
+          GH_TOKEN: ${{ steps.pat.outputs.token }}
+          TARGET_REPO: ${{ github.event.inputs.repo }}
+          SETUP_CONFIG: ${{ github.event.inputs.setup_config }}
+        run: |
+          gh variable set SETUP_CONFIG \
+            --repo "$TARGET_REPO" \
+            --body "$SETUP_CONFIG"
+          echo "SETUP_CONFIG variable set on $TARGET_REPO"
+
+      - name: Run setup plugins
+        env:
+          GH_TOKEN: ${{ steps.pat.outputs.token }}
+          TARGET_REPO: ${{ github.event.inputs.repo }}
+          SETUP_CONFIG: ${{ github.event.inputs.setup_config }}
+          ORG_SECRETS: ${{ secrets.ORG_SETUP_SECRETS }}
+        run: |
+          export SECRETS="$ORG_SECRETS"
+          export GITHUB_REPOSITORY="$TARGET_REPO"
+
+          chmod +x .github/setup/run-setup.sh
+          .github/setup/run-setup.sh

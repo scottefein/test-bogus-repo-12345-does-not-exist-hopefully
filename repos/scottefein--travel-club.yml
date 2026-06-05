@@ -1,0 +1,35 @@
+repo: scottefein/travel-club
+branch: master
+
+sync:
+  agents:
+    enabled: true
+    include: all
+    exclude: []
+
+setup:
+  enabled: true
+  plugins:
+    - name: vercel
+      config:
+        framework: nextjs
+        build_command: "npm run build"
+        output_directory: ".next"
+
+    - name: supabase
+      config:
+        organization_id: "jguexrbnnjbdispvbrgf"
+        region: us-east-1
+        set_vercel_env: true
+
+    - name: clerk
+      config:
+        set_vercel_env: true
+        allowed_origins:
+          - "https://$REPO_NAME.vercel.app"
+          - "http://localhost:3000"
+
+    - name: resend
+      config:
+        domain: emails.sefindustries.com
+        set_vercel_env: true

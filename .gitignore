@@ -1,0 +1,12 @@
+# Agent memory runtime data (keep directory structure via .gitkeep)
+.claude/agent-memory/**/*
+!.claude/agent-memory/**/.gitkeep
+
+# Claude local settings
+.claude/settings.local.json
+
+# Secrets (never commit)
+secrets.json
+
+# Dev server state (bin/dev)
+.dev/

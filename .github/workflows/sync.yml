@@ -1,0 +1,68 @@
+name: Sync Configs
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Target repo (owner/repo) or "all"'
+        required: false
+        default: 'all'
+      dry_run:
+        description: 'Dry run (show changes without creating PRs)'
+        required: false
+        type: boolean
+        default: false
+
+  push:
+    branches: [master]
+    paths:
+      - 'src/agents/**'
+      - 'src/templates/**'
+      - 'src/mcp.json'
+      - 'src/bin/**'
+      - '.claude/skills/**'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: github.repository == 'scottefein/sef-industries-team'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run sync
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::SYNC_PAT secret is not set"
+            exit 1
+          fi
+
+          REPO="${{ github.event.inputs.repo || 'all' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+
+          ARGS=""
+          if [[ "$REPO" == "all" ]]; then
+            ARGS="--all"
+          else
+            ARGS="$REPO"
+          fi
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          bin/sync $ARGS

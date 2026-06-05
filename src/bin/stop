@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stop the Next.js development server started by bin/dev
+set -euo pipefail
+
+if [[ -f .dev/pid ]]; then
+    PID="$(cat .dev/pid)"
+    PORT="$(cat .dev/port 2>/dev/null || echo "3000")"
+
+    if kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null || true
+        # Also kill any child processes (next dev spawns workers)
+        pkill -P "$PID" 2>/dev/null || true
+        echo "[dev] Stopped dev server (PID: $PID, port: $PORT)"
+    else
+        echo "[dev] Server not running (stale PID: $PID)"
+    fi
+
+    rm -rf .dev
+else
+    # Fallback: find and kill any next dev process in this directory
+    PIDS="$(lsof -ti :3000 2>/dev/null || true)"
+    if [[ -n "$PIDS" ]]; then
+        echo "$PIDS" | xargs kill 2>/dev/null || true
+        echo "[dev] Killed processes on port 3000"
+    else
+        echo "[dev] No dev server found"
+    fi
+fi

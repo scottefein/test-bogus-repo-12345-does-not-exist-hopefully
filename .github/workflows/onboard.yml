@@ -1,0 +1,44 @@
+name: Onboard Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repository to onboard (owner/repo)'
+        required: true
+        type: string
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run onboard
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          chmod +x bin/onboard
+          bin/onboard "${{ inputs.repo }}" --setup
+
+      - name: Commit config changes
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git add repos/
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: onboard ${{ inputs.repo }}"
+          git push

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Onboard a repo for Claude config sync
+# Usage: bin/onboard <owner/repo> [--sync] [--setup]
+
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+
+require_cmd gh
+
+REPO=""
+RUN_SYNC=false
+RUN_SETUP=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --sync)  RUN_SYNC=true; shift ;;
+        --setup) RUN_SETUP=true; shift ;;
+        -*)      die "Unknown flag: $1" ;;
+        *)       REPO="$1"; shift ;;
+    esac
+done
+
+[[ -n "$REPO" ]] || die "Usage: bin/onboard <owner/repo> [--sync] [--setup]"
+
+# Validate repo exists
+log "Validating $REPO..."
+gh repo view "$REPO" --json name >/dev/null 2>&1 || die "Repo not found or not accessible: $REPO"
+
+# Determine default branch
+default_branch="$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+
+# Create config file
+config_name="$(repo_to_config "$REPO")"
+config_path="$REPOS_DIR/$config_name"
+
+created_new=false
+if [[ -f "$config_path" ]]; then
+    warn "Config already exists: $config_path"
+    if ! $RUN_SETUP; then
+        warn "To re-sync, run: bin/sync $REPO"
+        exit 0
+    fi
+    log "Proceeding with --setup using existing config"
+else
+    cat > "$config_path" <<YAML
+repo: $REPO
+branch: $default_branch
+
+sync:
+  agents:
+    enabled: true
+    include: all
+    exclude: []
+YAML
+    ok "Created config: $config_path"
+    created_new=true
+fi
+
+# Handle --setup: set secrets and trigger workflow
+if $RUN_SETUP; then
+    require_cmd python3
+
+    # Always set GCP auth secrets (needed for CI/CD workflows)
+    log "Setting GCP auth secrets on $REPO..."
+    echo "$GCP_WIF_PROVIDER" | gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$REPO"
+    echo "$GCP_SERVICE_ACCOUNT" | gh secret set GCP_SERVICE_ACCOUNT --repo "$REPO"
+    ok "GCP secrets set"
+
+    # For newly created configs, append default setup if no setup section exists
+    if $created_new && [[ -f "$REPOS_DIR/_default-setup.yml" ]]; then
+        if ! grep -q "^setup:" "$config_path"; then
+            log "Appending default setup config..."
+            echo "" >> "$config_path"
+            cat "$REPOS_DIR/_default-setup.yml" >> "$config_path"
+            ok "Default setup appended"
+        fi
+    fi
+
+    setup_json="$(yaml_to_json "$config_path" "setup" 2>/dev/null || true)"
+
+    if [[ -n "$setup_json" ]]; then
+        log "Pushing SETUP_CONFIG to $REPO..."
+        gh variable set SETUP_CONFIG --repo "$REPO" --body "$setup_json"
+        ok "SETUP_CONFIG variable set"
+
+        # Trigger by pushing a trigger file (also ensures workflow gets indexed)
+        log "Triggering repo-setup workflow..."
+        trigger_content="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        trigger_encoded="$(echo -n "$trigger_content" | base64)"
+
+        # Get existing file SHA if it exists (needed for updates)
+        existing_sha="$(gh api "repos/$REPO/contents/.github/setup/.trigger" \
+            --jq '.sha' 2>/dev/null || true)"
+
+        if [[ -n "$existing_sha" ]]; then
+            gh api "repos/$REPO/contents/.github/setup/.trigger" \
+                -X PUT \
+                -f message="chore: trigger post-creation setup" \
+                -f content="$trigger_encoded" \
+                -f sha="$existing_sha" \
+                -f branch="$default_branch" >/dev/null
+        else
+            gh api "repos/$REPO/contents/.github/setup/.trigger" \
+                -X PUT \
+                -f message="chore: trigger post-creation setup" \
+                -f content="$trigger_encoded" \
+                -f branch="$default_branch" >/dev/null
+        fi
+        ok "repo-setup.yml triggered"
+    else
+        log "No setup plugins configured — skipping workflow trigger"
+    fi
+fi
+
+if $RUN_SYNC; then
+    log "Running initial sync..."
+    exec "$REPO_ROOT/bin/sync" "$REPO"
+fi
+
+log "To sync, run: bin/sync $REPO"

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Sync Claude configs to target repos via PRs
+# Usage: bin/sync <owner/repo> [--dry-run]
+#        bin/sync --all [--dry-run]
+
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+
+require_cmd gh
+require_cmd git
+require_cmd python3
+
+DRY_RUN=false
+TARGET=""
+SYNC_ALL=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true; shift ;;
+        --all)     SYNC_ALL=true; shift ;;
+        -*)        die "Unknown flag: $1" ;;
+        *)         TARGET="$1"; shift ;;
+    esac
+done
+
+if ! $SYNC_ALL && [[ -z "$TARGET" ]]; then
+    die "Usage: bin/sync <owner/repo> [--dry-run] or bin/sync --all [--dry-run]"
+fi
+
+sync_repo() {
+    local config_file="$1"
+    local repo base_branch
+
+    repo="$(yaml_get "$config_file" "repo")"
+    base_branch="$(yaml_get "$config_file" "branch")"
+    base_branch="${base_branch:-main}"
+
+    [[ -n "$repo" ]] || die "No 'repo' field in $config_file"
+
+    log "Syncing $repo (base: $base_branch)"
+
+    # Resolve which agents to sync
+    local agents
+    agents="$(resolve_agents "$config_file")"
+    if [[ -z "$agents" ]]; then
+        warn "No agents to sync for $repo (agents disabled or empty)"
+        return 0
+    fi
+
+    log "  Agents: $(echo "$agents" | tr '\n' ' ')"
+
+    # Clone target repo
+    local workdir
+    workdir="$(make_temp_dir)"
+    local clone_dir="$workdir/repo"
+
+    log "  Cloning $repo..."
+    gh repo clone "$repo" "$clone_dir" -- --depth=1 --branch="$base_branch" --single-branch -q 2>/dev/null || \
+        die "Failed to clone $repo (branch: $base_branch)"
+
+    # Create sync branch
+    local branch_name="claude-config-sync/$(date +%Y%m%d-%H%M%S)"
+    git -C "$clone_dir" checkout -b "$branch_name" -q
+
+    # Compile and copy agents
+    local target_agents="$clone_dir/.claude/agents"
+    local target_memory="$clone_dir/.claude/agent-memory"
+    mkdir -p "$target_agents" "$target_memory"
+
+    while IFS= read -r agent; do
+        [[ -n "$agent" ]] || continue
+        compile_agent "$agent" "$target_agents"
+
+        # Ensure agent-memory dir exists
+        mkdir -p "$target_memory/$agent"
+        touch "$target_memory/$agent/.gitkeep"
+
+        ok "    Compiled: $agent"
+    done <<< "$agents"
+
+    # Copy skills
+    local skills_src="$REPO_ROOT/.claude/skills"
+    if [[ -d "$skills_src" ]]; then
+        local target_skills="$clone_dir/.claude/skills"
+        mkdir -p "$target_skills"
+        cp -r "$skills_src"/* "$target_skills/" 2>/dev/null || true
+        local skill_count
+        skill_count="$(find "$target_skills" -name "SKILL.md" 2>/dev/null | wc -l)"
+        ok "    Copied: $skill_count skills"
+    fi
+
+    # Copy app scripts (bin/dev, bin/stop, etc.)
+    local bin_src="$SRC_DIR/bin"
+    if [[ -d "$bin_src" ]]; then
+        local target_bin="$clone_dir/bin"
+        mkdir -p "$target_bin"
+        cp "$bin_src"/* "$target_bin/" 2>/dev/null || true
+        chmod +x "$target_bin"/* 2>/dev/null || true
+        local bin_count
+        bin_count="$(find "$target_bin" -type f 2>/dev/null | wc -l)"
+        ok "    Copied: $bin_count scripts to bin/"
+    fi
+
+    # Copy MCP config
+    if [[ -f "$SRC_DIR/mcp.json" ]]; then
+        cp "$SRC_DIR/mcp.json" "$clone_dir/.mcp.json"
+        ok "    Copied: .mcp.json"
+    fi
+
+    # Write .managed marker (no timestamp — avoids false diffs)
+    cat > "$clone_dir/.claude/.managed" <<'MARKER'
+# This directory is managed by sef-industries-team config sync.
+# Do not edit agent files directly — changes will be overwritten.
+# Source: https://github.com/scottefein/sef-industries-team
+MARKER
+
+    # Check for changes
+    git -C "$clone_dir" add .claude/ .mcp.json bin/ 2>/dev/null || true
+    if git -C "$clone_dir" diff --cached --quiet; then
+        ok "  $repo: already up to date"
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        log "  [DRY RUN] Would create PR on $repo with:"
+        git -C "$clone_dir" diff --cached --stat
+        return 0
+    fi
+
+    # Commit and push
+    git -C "$clone_dir" config user.name "github-actions[bot]"
+    git -C "$clone_dir" config user.email "github-actions[bot]@users.noreply.github.com"
+    git -C "$clone_dir" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
+    git -C "$clone_dir" commit -q -m "chore: sync Claude agent configs from sef-industries-team"
+    git -C "$clone_dir" push -q origin "$branch_name"
+
+    # Create PR
+    local pr_url
+    pr_url="$(gh pr create \
+        --repo "$repo" \
+        --base "$base_branch" \
+        --head "$branch_name" \
+        --title "Sync Claude agent configs" \
+        --body "$(cat <<'EOF'
+## Summary
+- Updated Claude configs from [sef-industries-team](https://github.com/scottefein/sef-industries-team)
+- Agents compiled from canonical sources with shared memory boilerplate
+- Skills synced for stack-specific guidance (Supabase, Clerk, Resend, Vercel)
+
+## What changed
+Files in `.claude/` have been updated to match the latest definitions.
+
+This PR was created automatically by `bin/sync`.
+EOF
+)")"
+
+    ok "  PR created: $pr_url"
+}
+
+# Collect configs to sync
+configs=()
+if $SYNC_ALL; then
+    for f in "$REPOS_DIR"/*.yml; do
+        [[ "$(basename "$f")" == _* ]] && continue
+        [[ -f "$f" ]] && configs+=("$f")
+    done
+    [[ ${#configs[@]} -eq 0 ]] && die "No repo configs found in $REPOS_DIR"
+else
+    config_name="$(repo_to_config "$TARGET")"
+    config_path="$REPOS_DIR/$config_name"
+    [[ -f "$config_path" ]] || die "No config found: $config_path (run bin/onboard $TARGET first)"
+    configs+=("$config_path")
+fi
+
+for config in "${configs[@]}"; do
+    sync_repo "$config"
+done
+
+ok "Sync complete"
